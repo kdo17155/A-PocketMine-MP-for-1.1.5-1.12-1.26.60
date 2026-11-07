@@ -1,0 +1,13 @@
+# 运行时生成的文件，不属于源码
+/server.properties
+/pocketmine.yml
+/plugins/
+/worlds/
+/players/
+/crashdumps/
+/logs/
+*.log
+
+# 构建产物与缓存
+*.phar
+/.phar-cache/

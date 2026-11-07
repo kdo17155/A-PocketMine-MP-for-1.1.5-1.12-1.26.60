@@ -1,0 +1,223 @@
+<?php
+
+/*
+ * This file is part of BedrockProtocol.
+ * Copyright (C) 2014-2022 PocketMine Team <https://github.com/pmmp/BedrockProtocol>
+ *
+ * BedrockProtocol is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Lesser General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ */
+
+declare(strict_types=1);
+
+namespace pocketmine\network\mcpe\protocol;
+
+use pmmp\encoding\ByteBufferReader;
+use pmmp\encoding\ByteBufferWriter;
+use pmmp\encoding\LE;
+use pmmp\encoding\VarInt;
+use pocketmine\math\Vector3;
+use pocketmine\network\mcpe\protocol\serializer\CommonTypes;
+use pocketmine\network\mcpe\protocol\types\AbilitiesData;
+use pocketmine\network\mcpe\protocol\types\DeviceOS;
+use pocketmine\network\mcpe\protocol\types\entity\EntityLink;
+use pocketmine\network\mcpe\protocol\types\entity\MetadataProperty;
+use pocketmine\network\mcpe\protocol\types\entity\PropertySyncData;
+use pocketmine\network\mcpe\protocol\types\inventory\ItemStackWrapper;
+use pocketmine\network\mcpe\protocol\types\PassengerOfBlockData;
+use Ramsey\Uuid\UuidInterface;
+use function count;
+
+class AddPlayerPacket extends DataPacket implements ClientboundPacket{
+	public const NETWORK_ID = ProtocolInfo::ADD_PLAYER_PACKET;
+
+	public UuidInterface $uuid;
+	public string $username;
+	public int $actorRuntimeId;
+	public string $platformChatId = "";
+	public Vector3 $position;
+	public ?Vector3 $motion = null;
+	public float $pitch = 0.0;
+	public float $yaw = 0.0;
+	public float $headYaw = 0.0;
+	public ItemStackWrapper $item;
+	public int $gameMode;
+	/**
+	 * @var MetadataProperty[]
+	 * @phpstan-var array<int, MetadataProperty>
+	 */
+	public array $metadata = [];
+	public PropertySyncData $syncedProperties;
+
+	public UpdateAbilitiesPacket $abilitiesPacket;
+
+	/** @var EntityLink[] */
+	public array $links = [];
+	public ?PassengerOfBlockData $passengerBlockData = null;
+	public string $deviceId = ""; //TODO: fill player's device ID (???)
+	public int $buildPlatform = DeviceOS::ANDROID;
+
+	/**
+	 * @generate-create-func
+	 * @param MetadataProperty[] $metadata
+	 * @param EntityLink[]       $links
+	 * @phpstan-param array<int, MetadataProperty> $metadata
+	 */
+	public static function create(
+		UuidInterface $uuid,
+		string $username,
+		int $actorRuntimeId,
+		string $platformChatId,
+		Vector3 $position,
+		?Vector3 $motion,
+		float $pitch,
+		float $yaw,
+		float $headYaw,
+		ItemStackWrapper $item,
+		int $gameMode,
+		array $metadata,
+		PropertySyncData $syncedProperties,
+		UpdateAbilitiesPacket $abilitiesPacket,
+		array $links,
+		?PassengerOfBlockData $passengerBlockData,
+		string $deviceId,
+		int $buildPlatform,
+	) : self{
+		$result = new self;
+		$result->uuid = $uuid;
+		$result->username = $username;
+		$result->actorRuntimeId = $actorRuntimeId;
+		$result->platformChatId = $platformChatId;
+		$result->position = $position;
+		$result->motion = $motion;
+		$result->pitch = $pitch;
+		$result->yaw = $yaw;
+		$result->headYaw = $headYaw;
+		$result->item = $item;
+		$result->gameMode = $gameMode;
+		$result->metadata = $metadata;
+		$result->syncedProperties = $syncedProperties;
+		$result->abilitiesPacket = $abilitiesPacket;
+		$result->links = $links;
+		$result->passengerBlockData = $passengerBlockData;
+		$result->deviceId = $deviceId;
+		$result->buildPlatform = $buildPlatform;
+		return $result;
+	}
+
+	protected function decodePayload(ByteBufferReader $in, int $protocolId) : void{
+		$this->uuid = CommonTypes::getUUID($in);
+		$this->username = CommonTypes::getString($in);
+		if($protocolId <= ProtocolInfo::PROTOCOL_1_19_0){
+			CommonTypes::getActorUniqueId($in);
+		}
+		$this->actorRuntimeId = CommonTypes::getActorRuntimeId($in);
+		$this->platformChatId = CommonTypes::getString($in);
+		$this->position = CommonTypes::getVector3($in);
+		$this->motion = CommonTypes::getVector3($in);
+		$this->pitch = LE::readFloat($in);
+		$this->yaw = LE::readFloat($in);
+		$this->headYaw = LE::readFloat($in);
+		$this->item = $protocolId >= ProtocolInfo::PROTOCOL_1_26_40 ?
+			CommonTypes::getNetworkItemStackDescriptor($in, $protocolId) :
+			CommonTypes::getItemStackWrapper($in, $protocolId);
+		$this->gameMode = $protocolId >= ProtocolInfo::PROTOCOL_1_18_30 ?
+			VarInt::readSignedInt($in) :
+			0;
+		$this->metadata = CommonTypes::getEntityMetadata($in, $protocolId);
+		$this->syncedProperties = $protocolId >= ProtocolInfo::PROTOCOL_1_19_40 ?
+			PropertySyncData::read($in) :
+			new PropertySyncData([], []);
+
+		$this->abilitiesPacket = new UpdateAbilitiesPacket();
+		if($protocolId >= ProtocolInfo::PROTOCOL_1_19_10){
+			$this->abilitiesPacket->decodePayload($in, $protocolId);
+		}else{
+			VarInt::readUnsignedInt($in); //flags
+			$commandPermission = VarInt::readUnsignedInt($in);
+			VarInt::readUnsignedInt($in); //action permissions
+			$playerPermission = VarInt::readUnsignedInt($in);
+			VarInt::readUnsignedInt($in); //custom flags
+			$targetActorUniqueId = LE::readSignedLong($in);
+			$this->abilitiesPacket = UpdateAbilitiesPacket::create(new AbilitiesData(
+				$commandPermission,
+				$playerPermission,
+				$targetActorUniqueId,
+				[]
+			));
+		}
+
+		$linkCount = VarInt::readUnsignedInt($in);
+		for($i = 0; $i < $linkCount; ++$i){
+			$this->links[$i] = CommonTypes::getEntityLink($in, $protocolId);
+		}
+
+		if($protocolId >= ProtocolInfo::PROTOCOL_1_26_60){
+			$this->passengerBlockData = CommonTypes::readOptional($in, PassengerOfBlockData::read(...));
+		}
+		$this->deviceId = CommonTypes::getString($in);
+		$this->buildPlatform = LE::readSignedInt($in);
+	}
+
+	protected function encodePayload(ByteBufferWriter $out, int $protocolId) : void{
+		CommonTypes::putUUID($out, $this->uuid);
+		CommonTypes::putString($out, $this->username);
+		if($protocolId <= ProtocolInfo::PROTOCOL_1_19_0){
+			CommonTypes::putActorUniqueId($out, $this->abilitiesPacket->getData()->getTargetActorUniqueId());
+		}
+		CommonTypes::putActorRuntimeId($out, $this->actorRuntimeId);
+		if($protocolId >= ProtocolInfo::PROTOCOL_1_12_0){
+			CommonTypes::putString($out, $this->platformChatId);
+		}
+		CommonTypes::putVector3($out, $this->position);
+		CommonTypes::putVector3Nullable($out, $this->motion);
+		LE::writeFloat($out, $this->pitch);
+		LE::writeFloat($out, $this->yaw);
+		LE::writeFloat($out, $this->headYaw);
+		if($protocolId >= ProtocolInfo::PROTOCOL_1_26_40){
+			CommonTypes::putNetworkItemStackDescriptor($out, $this->item, $protocolId);
+		}else{
+			CommonTypes::putItemStackWrapper($out, $this->item, $protocolId);
+		}
+		if($protocolId >= ProtocolInfo::PROTOCOL_1_18_30){
+			VarInt::writeSignedInt($out, $this->gameMode);
+		}
+		CommonTypes::putEntityMetadata($out, $this->metadata, $protocolId);
+		if($protocolId <= ProtocolInfo::PROTOCOL_1_1_5){
+			//1.1.x: no abilities, links or device information
+			return;
+		}
+		if($protocolId >= ProtocolInfo::PROTOCOL_1_19_40){
+			$this->syncedProperties->write($out);
+		}
+
+		if($protocolId >= ProtocolInfo::PROTOCOL_1_19_10){
+			$this->abilitiesPacket->encodePayload($out, $protocolId);
+		}else{
+			$abilities = $this->abilitiesPacket->getData();
+			VarInt::writeUnsignedInt($out, 0);
+			VarInt::writeUnsignedInt($out, $abilities->getCommandPermission());
+			VarInt::writeUnsignedInt($out, 0xffffffff);
+			VarInt::writeUnsignedInt($out, $abilities->getPlayerPermission());
+			VarInt::writeUnsignedInt($out, 0);
+			LE::writeSignedLong($out, $abilities->getTargetActorUniqueId());
+		}
+
+		VarInt::writeUnsignedInt($out, count($this->links));
+		foreach($this->links as $link){
+			CommonTypes::putEntityLink($out, $protocolId, $link);
+		}
+
+		if($protocolId >= ProtocolInfo::PROTOCOL_1_26_60){
+			CommonTypes::writeOptional($out, $this->passengerBlockData, static fn(ByteBufferWriter $out, PassengerOfBlockData $data) => $data->write($out));
+		}
+		CommonTypes::putString($out, $this->deviceId);
+		LE::writeSignedInt($out, $protocolId >= ProtocolInfo::PROTOCOL_1_26_40 && $this->buildPlatform < 0 ? DeviceOS::ANDROID : $this->buildPlatform); //1.26.40+ clients disconnect on unknown platforms
+	}
+
+	public function handle(PacketHandlerInterface $handler) : bool{
+		return $handler->handleAddPlayer($this);
+	}
+}

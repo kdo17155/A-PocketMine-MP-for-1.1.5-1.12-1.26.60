@@ -1,0 +1,234 @@
+<?php
+
+/*
+ * This file is part of BedrockProtocol.
+ * Copyright (C) 2014-2022 PocketMine Team <https://github.com/pmmp/BedrockProtocol>
+ *
+ * BedrockProtocol is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Lesser General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ */
+
+declare(strict_types=1);
+
+namespace pocketmine\network\mcpe\protocol\types\inventory;
+
+use pmmp\encoding\Byte;
+use pmmp\encoding\ByteBufferReader;
+use pmmp\encoding\ByteBufferWriter;
+use pmmp\encoding\VarInt;
+use pocketmine\math\Vector3;
+use pocketmine\network\mcpe\protocol\InventoryTransactionPacket;
+use pocketmine\network\mcpe\protocol\ProtocolInfo;
+use pocketmine\network\mcpe\protocol\serializer\CommonTypes;
+use pocketmine\network\mcpe\protocol\types\BlockPosition;
+use pocketmine\network\mcpe\protocol\types\GetTypeIdFromConstTrait;
+
+class UseItemTransactionData extends TransactionData{
+	use GetTypeIdFromConstTrait;
+
+	public const ID = InventoryTransactionPacket::TYPE_USE_ITEM;
+
+	public const ACTION_CLICK_BLOCK = 0;
+	public const ACTION_CLICK_AIR = 1;
+	public const ACTION_BREAK_BLOCK = 2;
+	public const ACTION_USE_AS_ATTACK = 3;
+
+	private int $actionType;
+	private TriggerType $triggerType;
+	private BlockPosition $blockPosition;
+	private int $face;
+	private int $hotbarSlot;
+	private ItemStackWrapper $itemInHand;
+	private Vector3 $playerPosition;
+	private Vector3 $clickPosition;
+	private int $blockRuntimeId;
+	private PredictedResult $clientInteractPrediction;
+	private int $clientCooldownState;
+	private int $hand = 0;
+
+	public function getActionType() : int{
+		return $this->actionType;
+	}
+
+	public function getTriggerType() : TriggerType{ return $this->triggerType; }
+
+	public function getBlockPosition() : BlockPosition{
+		return $this->blockPosition;
+	}
+
+	public function getFace() : int{
+		return $this->face;
+	}
+
+	public function getHotbarSlot() : int{
+		return $this->hotbarSlot;
+	}
+
+	public function getItemInHand() : ItemStackWrapper{
+		return $this->itemInHand;
+	}
+
+	/** 0 = main hand, 1 = off hand (standalone InventoryTransaction only). */
+	public function getHand() : int{ return $this->hand; }
+
+	public function getPlayerPosition() : Vector3{
+		return $this->playerPosition;
+	}
+
+	public function getClickPosition() : Vector3{
+		return $this->clickPosition;
+	}
+
+	public function getBlockRuntimeId() : int{
+		return $this->blockRuntimeId;
+	}
+
+	public function getClientInteractPrediction() : PredictedResult{ return $this->clientInteractPrediction; }
+
+	public function getClientCooldownState() : int{ return $this->clientCooldownState; }
+
+	protected function decodeData(ByteBufferReader $in, int $protocolId) : void{
+		$this->decodeUseItemData($in, $protocolId, $protocolId >= ProtocolInfo::PROTOCOL_1_26_50);
+	}
+
+	protected function decodeAuthInputData(ByteBufferReader $in, int $protocolId) : void{
+		$this->decodeUseItemData($in, $protocolId, false);
+	}
+
+	private function decodeUseItemData(ByteBufferReader $in, int $protocolId, bool $hasHand) : void{
+		if($protocolId >= ProtocolInfo::PROTOCOL_1_26_30){
+			$this->actionType = VarInt::readSignedInt($in);
+		}else{
+			$this->actionType = VarInt::readUnsignedInt($in);
+		}
+		if($protocolId >= ProtocolInfo::PROTOCOL_1_21_20){
+			$this->triggerType = TriggerType::fromPacket($protocolId >= ProtocolInfo::PROTOCOL_1_26_30 ? Byte::readUnsigned($in) : VarInt::readUnsignedInt($in));
+		}else{
+			$this->triggerType = TriggerType::UNKNOWN;
+		}
+		$this->blockPosition = CommonTypes::getBlockPosition($in, $protocolId >= ProtocolInfo::PROTOCOL_1_26_10);
+		if($protocolId >= ProtocolInfo::PROTOCOL_1_26_30){
+			$this->face = Byte::readUnsigned($in);
+		}else{
+			$this->face = VarInt::readSignedInt($in);
+		}
+		$this->hotbarSlot = VarInt::readSignedInt($in);
+		$this->hand = $hasHand ? Byte::readUnsigned($in) : 0;
+		if($protocolId >= ProtocolInfo::PROTOCOL_1_26_30){
+			$this->itemInHand = CommonTypes::getNetworkItemStackDescriptor($in, $protocolId);
+		}else{
+			$this->itemInHand = CommonTypes::getItemStackWrapper($in, $protocolId);
+		}
+		$this->playerPosition = CommonTypes::getVector3($in);
+		$this->clickPosition = CommonTypes::getVector3($in);
+		$this->blockRuntimeId = $protocolId <= ProtocolInfo::PROTOCOL_1_1_5 ? 0 : VarInt::readUnsignedInt($in);
+		if($protocolId >= ProtocolInfo::PROTOCOL_1_21_20){
+			$this->clientInteractPrediction = PredictedResult::fromPacket($protocolId >= ProtocolInfo::PROTOCOL_1_26_30 ? Byte::readUnsigned($in) : VarInt::readUnsignedInt($in));
+			if($protocolId >= ProtocolInfo::PROTOCOL_1_26_10){
+				$this->clientCooldownState = Byte::readUnsigned($in);
+			}else{
+				$this->clientCooldownState = 0;
+			}
+		}else{
+			$this->clientInteractPrediction = PredictedResult::FAILURE;
+			$this->clientCooldownState = 0;
+		}
+	}
+
+	protected function encodeData(ByteBufferWriter $out, int $protocolId) : void{
+		$this->encodeUseItemData($out, $protocolId, $protocolId >= ProtocolInfo::PROTOCOL_1_26_50);
+	}
+
+	protected function encodeAuthInputData(ByteBufferWriter $out, int $protocolId) : void{
+		$this->encodeUseItemData($out, $protocolId, false);
+	}
+
+	private function encodeUseItemData(ByteBufferWriter $out, int $protocolId, bool $hasHand) : void{
+		if($protocolId >= ProtocolInfo::PROTOCOL_1_26_30){
+			VarInt::writeSignedInt($out, $this->actionType);
+		}else{
+			VarInt::writeUnsignedInt($out, $this->actionType);
+		}
+		if($protocolId >= ProtocolInfo::PROTOCOL_1_21_20){
+			if($protocolId >= ProtocolInfo::PROTOCOL_1_26_30){
+				Byte::writeUnsigned($out, $this->triggerType->value);
+			}else{
+				VarInt::writeUnsignedInt($out, $this->triggerType->value);
+			}
+		}
+		CommonTypes::putBlockPosition($out, $this->blockPosition, $protocolId >= ProtocolInfo::PROTOCOL_1_26_10);
+		if($protocolId >= ProtocolInfo::PROTOCOL_1_26_30){
+			Byte::writeUnsigned($out, $this->face);
+		}else{
+			VarInt::writeSignedInt($out, $this->face);
+		}
+		VarInt::writeSignedInt($out, $this->hotbarSlot);
+		if($hasHand){
+			Byte::writeUnsigned($out, $this->hand);
+		}
+		if($protocolId >= ProtocolInfo::PROTOCOL_1_26_30){
+			CommonTypes::putNetworkItemStackDescriptor($out, $this->itemInHand, $protocolId);
+		}else{
+			CommonTypes::putItemStackWrapper($out, $this->itemInHand, $protocolId);
+		}
+		CommonTypes::putVector3($out, $this->playerPosition);
+		CommonTypes::putVector3($out, $this->clickPosition);
+		if($protocolId > ProtocolInfo::PROTOCOL_1_1_5){
+			VarInt::writeUnsignedInt($out, $this->blockRuntimeId);
+		}
+		if($protocolId >= ProtocolInfo::PROTOCOL_1_21_20){
+			if($protocolId >= ProtocolInfo::PROTOCOL_1_26_30){
+				Byte::writeUnsigned($out, $this->clientInteractPrediction->value);
+			}else{
+				VarInt::writeUnsignedInt($out, $this->clientInteractPrediction->value);
+			}
+			if($protocolId >= ProtocolInfo::PROTOCOL_1_26_10){
+				Byte::writeUnsigned($out, $this->clientCooldownState);
+			}
+		}
+	}
+
+	/**
+	 * @generate-create-func
+	 */
+	private static function initSelf(
+		int $actionType,
+		TriggerType $triggerType,
+		BlockPosition $blockPosition,
+		int $face,
+		int $hotbarSlot,
+		ItemStackWrapper $itemInHand,
+		Vector3 $playerPosition,
+		Vector3 $clickPosition,
+		int $blockRuntimeId,
+		PredictedResult $clientInteractPrediction,
+		int $clientCooldownState,
+		int $hand,
+	) : self{
+		$result = new self;
+		$result->actionType = $actionType;
+		$result->triggerType = $triggerType;
+		$result->blockPosition = $blockPosition;
+		$result->face = $face;
+		$result->hotbarSlot = $hotbarSlot;
+		$result->itemInHand = $itemInHand;
+		$result->playerPosition = $playerPosition;
+		$result->clickPosition = $clickPosition;
+		$result->blockRuntimeId = $blockRuntimeId;
+		$result->clientInteractPrediction = $clientInteractPrediction;
+		$result->clientCooldownState = $clientCooldownState;
+		$result->hand = $hand;
+		return $result;
+	}
+
+	/**
+	 * @param NetworkInventoryAction[] $actions
+	 */
+	public static function new(array $actions, int $actionType, TriggerType $triggerType, BlockPosition $blockPosition, int $face, int $hotbarSlot, ItemStackWrapper $itemInHand, Vector3 $playerPosition, Vector3 $clickPosition, int $blockRuntimeId, PredictedResult $clientInteractPrediction, int $clientCooldownState, int $hand = 0) : self{
+		$result = self::initSelf($actionType, $triggerType, $blockPosition, $face, $hotbarSlot, $itemInHand, $playerPosition, $clickPosition, $blockRuntimeId, $clientInteractPrediction, $clientCooldownState, $hand);
+		$result->actions = $actions;
+		return $result;
+	}
+}
